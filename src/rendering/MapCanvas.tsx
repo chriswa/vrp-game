@@ -1,9 +1,9 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
-import type { Problem, NodeId, RiderId, VehicleId } from '../types/problem';
+import type { Problem, RiderId, VehicleId } from '../types/problem';
 import type { Solution } from '../types/solution';
 import type { SimulationResult } from '../types/simulation';
-import { drawCity, findNodeAtPosition } from './drawCity';
-import { drawRoutes, drawUnassignedRiders } from './drawRoutes';
+import { drawCity } from './drawCity';
+import { drawRoutes, drawAllRiders, findRiderAtPosition } from './drawRoutes';
 import { drawVehicles, getVehiclePositions } from './drawVehicles';
 import { PathCache } from '../pathfinding/pathCache';
 
@@ -13,9 +13,14 @@ interface MapCanvasProps {
   simulationResult: SimulationResult;
   currentTime: number;
   pathCache: PathCache;
+  riderNumbers: Map<RiderId, number>;
+  selectedRiderId: RiderId | null;
+  hoveredRiderId: RiderId | null;
+  onRiderClick?: (riderId: RiderId) => void;
+  onRiderHover?: (riderId: RiderId | null) => void;
+  onVehicleClick?: (vehicleId: VehicleId) => void;
   width?: number;
   height?: number;
-  onNodeClick?: (nodeId: NodeId) => void;
 }
 
 export function MapCanvas({
@@ -24,14 +29,21 @@ export function MapCanvas({
   simulationResult,
   currentTime,
   pathCache,
-  width = 800,
-  height = 800,
-  onNodeClick,
+  riderNumbers,
+  selectedRiderId,
+  hoveredRiderId,
+  onRiderClick,
+  onRiderHover,
+  onVehicleClick,
+  width = 500,
+  height = 500,
 }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [hoverNode, setHoverNode] = useState<NodeId | null>(null);
-  const [selectedNodes, setSelectedNodes] = useState<NodeId[]>([]);
-  const [highlightedPath, setHighlightedPath] = useState<NodeId[]>([]);
+  const [localHoveredRider, setLocalHoveredRider] = useState<RiderId | null>(null);
+  const [hoveringVehicle, setHoveringVehicle] = useState(false);
+
+  // Combine external hover with local hover
+  const effectiveHoveredRider = hoveredRiderId ?? localHoveredRider;
 
   // Build lookup maps
   const vehicleIndex = new Map<VehicleId, number>();
@@ -40,22 +52,23 @@ export function MapCanvas({
   const riderMap = new Map<RiderId, typeof problem.riders[0]>();
   problem.riders.forEach((r) => riderMap.set(r.id, r));
 
-  // Get unassigned riders
-  const unassignedRidersList = problem.riders.filter((r) =>
-    simulationResult.unassignedRiders.includes(r.id)
-  );
-
-  // Handle path highlighting when two nodes are selected
-  useEffect(() => {
-    if (selectedNodes.length === 2) {
-      const result = pathCache.getPath(selectedNodes[0], selectedNodes[1]);
-      if (result) {
-        setHighlightedPath(result.path);
+  // Get assigned riders
+  const assignedRiders = new Set<RiderId>();
+  for (const [, itinerary] of solution) {
+    for (const stop of itinerary) {
+      if (stop.type === 'pickup') {
+        assignedRiders.add(stop.riderId);
       }
-    } else {
-      setHighlightedPath([]);
     }
-  }, [selectedNodes, pathCache]);
+  }
+
+  // Calculate map width (for opacity fade)
+  let minX = Infinity, maxX = -Infinity;
+  for (const node of problem.city.nodes.values()) {
+    minX = Math.min(minX, node.x);
+    maxX = Math.max(maxX, node.x);
+  }
+  const mapWidth = maxX - minX;
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -66,23 +79,30 @@ export function MapCanvas({
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
 
-      const nodeId = findNodeAtPosition(problem.city, x, y);
-      if (nodeId) {
-        onNodeClick?.(nodeId);
+      // Check if clicking on a vehicle
+      const vehiclePositions = getVehiclePositions(
+        problem.vehicles,
+        simulationResult.vehicleResults,
+        problem.city,
+        currentTime,
+        pathCache
+      );
+      for (const vp of vehiclePositions) {
+        const dx = vp.x - x;
+        const dy = vp.y - y;
+        if (dx * dx + dy * dy <= 12 * 12) {
+          onVehicleClick?.(vp.vehicleId);
+          return;
+        }
+      }
 
-        // Toggle selection for path debugging
-        setSelectedNodes((prev) => {
-          if (prev.includes(nodeId)) {
-            return prev.filter((id) => id !== nodeId);
-          }
-          if (prev.length >= 2) {
-            return [nodeId];
-          }
-          return [...prev, nodeId];
-        });
+      // Check if clicking on a rider marker
+      const riderHit = findRiderAtPosition(x, y, problem.riders, problem.city);
+      if (riderHit) {
+        onRiderClick?.(riderHit.riderId);
       }
     },
-    [problem.city, onNodeClick]
+    [problem.riders, problem.vehicles, problem.city, simulationResult.vehicleResults, currentTime, pathCache, onRiderClick, onVehicleClick]
   );
 
   const handleMouseMove = useCallback(
@@ -94,11 +114,42 @@ export function MapCanvas({
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
 
-      const nodeId = findNodeAtPosition(problem.city, x, y);
-      setHoverNode(nodeId);
+      // Check if hovering over a vehicle
+      const vehiclePositions = getVehiclePositions(
+        problem.vehicles,
+        simulationResult.vehicleResults,
+        problem.city,
+        currentTime,
+        pathCache
+      );
+      let isOverVehicle = false;
+      for (const vp of vehiclePositions) {
+        const dx = vp.x - x;
+        const dy = vp.y - y;
+        if (dx * dx + dy * dy <= 12 * 12) {
+          isOverVehicle = true;
+          break;
+        }
+      }
+      setHoveringVehicle(isOverVehicle);
+
+      // Check if hovering over a rider marker
+      const riderHit = findRiderAtPosition(x, y, problem.riders, problem.city);
+      const newHoveredRider = riderHit?.riderId ?? null;
+
+      if (newHoveredRider !== localHoveredRider) {
+        setLocalHoveredRider(newHoveredRider);
+        onRiderHover?.(newHoveredRider);
+      }
     },
-    [problem.city]
+    [problem.riders, problem.vehicles, problem.city, simulationResult.vehicleResults, currentTime, pathCache, localHoveredRider, onRiderHover]
   );
+
+  const handleMouseLeave = useCallback(() => {
+    setLocalHoveredRider(null);
+    setHoveringVehicle(false);
+    onRiderHover?.(null);
+  }, [onRiderHover]);
 
   // Draw the canvas
   useEffect(() => {
@@ -109,35 +160,49 @@ export function MapCanvas({
     if (!ctx) return;
 
     // Clear canvas
-    ctx.fillStyle = '#f3f4f6';
+    ctx.fillStyle = '#f8fafc';
     ctx.fillRect(0, 0, width, height);
 
     // Draw city (roads and nodes)
-    drawCity(ctx, problem.city, {
-      highlightedPath,
-      selectedNode: selectedNodes[0],
-      hoverNode: hoverNode ?? undefined,
-    });
+    drawCity(ctx, problem.city, {});
 
-    // Draw planned routes
+    // Draw unassigned rider markers first (behind routes)
+    drawAllRiders(
+      ctx,
+      problem.riders,
+      riderNumbers,
+      problem.city,
+      assignedRiders,
+      effectiveHoveredRider,
+      selectedRiderId
+    );
+
+    // Draw planned routes (includes assigned rider markers)
     drawRoutes(
       ctx,
       problem.vehicles,
       solution,
       riderMap,
       problem.city,
-      vehicleIndex
+      vehicleIndex,
+      {
+        pathCache,
+        riderNumbers,
+        currentTime,
+        vehicleResults: simulationResult.vehicleResults,
+        hoveredRiderId: effectiveHoveredRider,
+        selectedRiderId,
+        mapWidth,
+      }
     );
-
-    // Draw unassigned rider locations
-    drawUnassignedRiders(ctx, unassignedRidersList, problem.city);
 
     // Draw vehicles at current positions
     const vehiclePositions = getVehiclePositions(
       problem.vehicles,
       simulationResult.vehicleResults,
       problem.city,
-      currentTime
+      currentTime,
+      pathCache
     );
     drawVehicles(ctx, vehiclePositions, vehicleIndex);
   }, [
@@ -145,14 +210,16 @@ export function MapCanvas({
     solution,
     simulationResult,
     currentTime,
-    highlightedPath,
-    selectedNodes,
-    hoverNode,
     width,
     height,
     vehicleIndex,
     riderMap,
-    unassignedRidersList,
+    assignedRiders,
+    pathCache,
+    riderNumbers,
+    selectedRiderId,
+    effectiveHoveredRider,
+    mapWidth,
   ]);
 
   return (
@@ -162,7 +229,12 @@ export function MapCanvas({
       height={height}
       onClick={handleClick}
       onMouseMove={handleMouseMove}
-      style={{ border: '1px solid #e5e7eb', borderRadius: '8px' }}
+      onMouseLeave={handleMouseLeave}
+      style={{
+        border: '1px solid #e2e8f0',
+        borderRadius: '6px',
+        cursor: (localHoveredRider || hoveringVehicle) ? 'pointer' : 'default',
+      }}
     />
   );
 }

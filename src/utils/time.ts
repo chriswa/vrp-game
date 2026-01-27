@@ -1,3 +1,8 @@
+// Round to nearest increment (default 5 minutes)
+export function roundTime(minutes: number, increment: number = 5): number {
+  return Math.round(minutes / increment) * increment;
+}
+
 // Format minutes from midnight as HH:MM
 export function formatTime(minutes: number): string {
   const hours = Math.floor(minutes / 60);
