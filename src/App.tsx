@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import type { RiderId, VehicleId, Rider } from './types/problem';
 import type { Solution, ItineraryStop } from './types/solution';
 import { createEmptySolution } from './types/solution';
@@ -17,6 +17,7 @@ function App() {
   const [selectedVehicleId, setSelectedVehicleId] = useState<VehicleId | null>(null);
   const [selectedRiderId, setSelectedRiderId] = useState<RiderId | null>(null);
   const [hoveredRiderId, setHoveredRiderId] = useState<RiderId | null>(null);
+  const [hoveredVehicleId, setHoveredVehicleId] = useState<VehicleId | null>(null);
 
   // Generate problem from seed and difficulty
   const problem = useMemo(() => {
@@ -85,6 +86,17 @@ function App() {
     return map;
   }, [problem.vehicles]);
 
+  // Calculate latest finish time across all vehicles
+  const latestFinishTime = useMemo(() => {
+    let latest = problem.serviceWindow.earliest;
+    for (const result of simulationResult.vehicleResults.values()) {
+      if (result.vehicleEnd.arrivalTime > latest) {
+        latest = result.vehicleEnd.arrivalTime;
+      }
+    }
+    return latest;
+  }, [simulationResult.vehicleResults, problem.serviceWindow.earliest]);
+
   const handleNewPuzzle = () => {
     const newSeed = parseInt(seedInput, 10) || Date.now();
     setSeed(newSeed);
@@ -117,6 +129,11 @@ function App() {
     playbackControls.setTime(problem.serviceWindow.earliest);
   };
 
+  // Select/deselect vehicle
+  const handleSelectVehicle = useCallback((vehicleId: VehicleId) => {
+    setSelectedVehicleId(prev => prev === vehicleId ? null : vehicleId);
+  }, []);
+
   // Select rider (clicking on rider list or map)
   // If rider is already assigned to a vehicle, also select that vehicle
   const handleSelectRider = useCallback((riderId: RiderId) => {
@@ -131,30 +148,29 @@ function App() {
     }
   }, [selectedRiderId, riderAssignments]);
 
-  // Assign selected rider to a vehicle
-  const handleAssignToVehicle = useCallback((vehicleId: VehicleId) => {
-    if (!selectedRiderId) return;
+  // Assign rider to selected vehicle
+  const handleAssignRiderToSelectedVehicle = useCallback((riderId: RiderId) => {
+    if (!selectedVehicleId) return;
 
     // Remove from any existing vehicle
     const newSolution = new Map(solution);
     for (const [vId, itinerary] of newSolution) {
-      const filtered = itinerary.filter(s => s.riderId !== selectedRiderId);
+      const filtered = itinerary.filter(s => s.riderId !== riderId);
       if (filtered.length !== itinerary.length) {
         newSolution.set(vId, filtered);
       }
     }
 
     // Add to selected vehicle
-    const currentItinerary = newSolution.get(vehicleId) || [];
+    const currentItinerary = newSolution.get(selectedVehicleId) || [];
     const newItinerary = [
       ...currentItinerary,
-      { riderId: selectedRiderId, type: 'pickup' as const },
-      { riderId: selectedRiderId, type: 'dropoff' as const },
+      { riderId, type: 'pickup' as const },
+      { riderId, type: 'dropoff' as const },
     ];
-    newSolution.set(vehicleId, newItinerary);
+    newSolution.set(selectedVehicleId, newItinerary);
     setSolution(newSolution);
-    setSelectedRiderId(null);
-  }, [selectedRiderId, solution]);
+  }, [selectedVehicleId, solution]);
 
   // Remove rider from vehicle
   const handleRemoveRider = useCallback((riderId: RiderId) => {
@@ -203,7 +219,62 @@ function App() {
   const selectedVehicleResult = selectedVehicleId
     ? simulationResult.vehicleResults.get(selectedVehicleId)
     : null;
-  const selectedRider = selectedRiderId ? riderMap.get(selectedRiderId) : null;
+
+  // Get scrubber indicators based on what's being hovered
+  const scrubberIndicators = useMemo(() => {
+    const indicators: { time: number; type: 'pickup' | 'dropoff' | 'start' | 'end'; riderNum?: number; color?: string }[] = [];
+
+    if (hoveredVehicleId) {
+      const vehicleResult = simulationResult.vehicleResults.get(hoveredVehicleId);
+      const itinerary = solution.get(hoveredVehicleId) || [];
+      const vehicle = problem.vehicles.find(v => v.id === hoveredVehicleId);
+      const vIdx = vehicleIndex.get(hoveredVehicleId) ?? 0;
+      const color = VEHICLE_COLORS[vIdx % VEHICLE_COLORS.length];
+
+      if (vehicle) {
+        indicators.push({ time: vehicle.startTime, type: 'start', color });
+      }
+
+      if (vehicleResult) {
+        vehicleResult.stops.forEach((stop, idx) => {
+          const itinStop = itinerary[idx];
+          if (itinStop) {
+            indicators.push({
+              time: stop.arrivalTime,
+              type: itinStop.type,
+              riderNum: riderNumbers.get(itinStop.riderId),
+              color,
+            });
+          }
+        });
+        indicators.push({ time: vehicleResult.vehicleEnd.arrivalTime, type: 'end', color });
+      }
+    } else if (hoveredRiderId) {
+      const assignedVehicle = riderAssignments.get(hoveredRiderId);
+      if (assignedVehicle) {
+        const vehicleResult = simulationResult.vehicleResults.get(assignedVehicle);
+        const itinerary = solution.get(assignedVehicle) || [];
+        const vIdx = vehicleIndex.get(assignedVehicle) ?? 0;
+        const color = VEHICLE_COLORS[vIdx % VEHICLE_COLORS.length];
+
+        if (vehicleResult) {
+          vehicleResult.stops.forEach((stop, idx) => {
+            const itinStop = itinerary[idx];
+            if (itinStop && itinStop.riderId === hoveredRiderId) {
+              indicators.push({
+                time: stop.arrivalTime,
+                type: itinStop.type,
+                riderNum: riderNumbers.get(hoveredRiderId),
+                color,
+              });
+            }
+          });
+        }
+      }
+    }
+
+    return indicators;
+  }, [hoveredVehicleId, hoveredRiderId, simulationResult.vehicleResults, solution, problem.vehicles, vehicleIndex, riderAssignments, riderNumbers]);
 
   return (
     <div style={{
@@ -292,6 +363,9 @@ function App() {
           }}>
             Score: {simulationResult.totalScore.toLocaleString()}
           </div>
+          <span style={{ color: '#64748b' }}>
+            Finish: <strong>{formatTime(latestFinishTime)}</strong>
+          </span>
         </div>
       </div>
 
@@ -325,13 +399,15 @@ function App() {
                 return (
                   <div
                     key={vehicle.id}
-                    onClick={() => setSelectedVehicleId(vehicle.id)}
+                    onClick={() => handleSelectVehicle(vehicle.id)}
+                    onMouseEnter={() => setHoveredVehicleId(vehicle.id)}
+                    onMouseLeave={() => setHoveredVehicleId(null)}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
                       gap: '8px',
                       padding: '6px 8px',
-                      backgroundColor: isSelected ? '#f1f5f9' : 'transparent',
+                      backgroundColor: isSelected ? '#f1f5f9' : hoveredVehicleId === vehicle.id ? '#f8fafc' : 'transparent',
                       borderRadius: '4px',
                       cursor: 'pointer',
                       border: isSelected ? `2px solid ${color}` : '2px solid transparent',
@@ -369,7 +445,47 @@ function App() {
                 const assignedIdx = assignedTo ? vehicleIndex.get(assignedTo) ?? -1 : -1;
                 const assignedColor = assignedIdx >= 0 ? VEHICLE_COLORS[assignedIdx % VEHICLE_COLORS.length] : null;
                 const isSelected = selectedRiderId === rider.id;
+                const isHovered = hoveredRiderId === rider.id;
                 const riderNum = riderNumbers.get(rider.id) ?? 0;
+
+                // Determine action button state when a vehicle is selected
+                let actionButton = null;
+                if (selectedVehicleId) {
+                  if (assignedTo === selectedVehicleId) {
+                    // Already on selected vehicle - show remove button
+                    actionButton = (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleRemoveRider(rider.id); }}
+                        style={{ ...riderActionBtnStyle, color: '#ef4444' }}
+                        title="Remove from vehicle"
+                      >
+                        ×
+                      </button>
+                    );
+                  } else if (!assignedTo) {
+                    // Not assigned - show add button
+                    actionButton = (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleAssignRiderToSelectedVehicle(rider.id); }}
+                        style={{ ...riderActionBtnStyle, color: '#22c55e' }}
+                        title="Add to vehicle"
+                      >
+                        +
+                      </button>
+                    );
+                  } else {
+                    // On a different vehicle - show transfer button
+                    actionButton = (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleAssignRiderToSelectedVehicle(rider.id); }}
+                        style={{ ...riderActionBtnStyle, color: '#f59e0b' }}
+                        title="Move to this vehicle"
+                      >
+                        ⇄
+                      </button>
+                    );
+                  }
+                }
 
                 return (
                   <div
@@ -385,7 +501,7 @@ function App() {
                       fontSize: '11px',
                       borderRadius: '3px',
                       cursor: 'pointer',
-                      backgroundColor: isSelected ? '#dbeafe' : hoveredRiderId === rider.id ? '#f1f5f9' : !assignedTo ? '#fef2f2' : 'transparent',
+                      backgroundColor: isSelected ? '#dbeafe' : isHovered ? '#f1f5f9' : !assignedTo ? '#fef2f2' : 'transparent',
                       border: isSelected ? '1px solid #3b82f6' : '1px solid transparent',
                     }}
                   >
@@ -411,7 +527,7 @@ function App() {
                         border: '1px solid #94a3b8',
                       }} />
                     )}
-                    <span style={{ color: assignedTo ? '#374151' : '#991b1b', minWidth: '50px' }}>
+                    <span style={{ color: assignedTo ? '#374151' : '#991b1b', flex: 1 }}>
                       {rider.name}
                     </span>
                     {rider.accessibility.needsWheelchair && (
@@ -422,86 +538,21 @@ function App() {
                         P:{formatTime(rider.pickupWindow.earliest)}
                       </span>
                     )}
-                    {rider.dropoffWindow && (
-                      <span style={{ color: '#64748b' }}>
-                        D:{formatTime(rider.dropoffWindow.earliest)}
-                      </span>
-                    )}
-                    {rider.maxTimeInVehicle && (
-                      <span style={{ color: '#64748b' }}>
-                        &lt;{rider.maxTimeInVehicle}m
-                      </span>
-                    )}
+                    {actionButton}
                   </div>
                 );
               })}
             </div>
           </div>
-
-          {/* Selected rider detail */}
-          {selectedRider && (
-            <div style={{
-              padding: '10px',
-              borderTop: '1px solid #e2e8f0',
-              backgroundColor: '#f8fafc',
-            }}>
-              <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '6px' }}>
-                Rider #{riderNumbers.get(selectedRider.id)}: {selectedRider.name}
-              </div>
-              <div style={{ fontSize: '11px', color: '#64748b', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                {selectedRider.accessibility.needsWheelchair && (
-                  <div style={{ color: '#1e40af' }}>Requires wheelchair access</div>
-                )}
-                {selectedRider.pickupWindow ? (
-                  <div>Pickup: {formatTime(selectedRider.pickupWindow.earliest)} - {formatTime(selectedRider.pickupWindow.latest)}</div>
-                ) : (
-                  <div>Pickup: anytime</div>
-                )}
-                {selectedRider.dropoffWindow ? (
-                  <div>Dropoff: {formatTime(selectedRider.dropoffWindow.earliest)} - {formatTime(selectedRider.dropoffWindow.latest)}</div>
-                ) : (
-                  <div>Dropoff: anytime</div>
-                )}
-                {selectedRider.maxTimeInVehicle && (
-                  <div>Max time in vehicle: {selectedRider.maxTimeInVehicle} min</div>
-                )}
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* Center - Map */}
+        {/* Middle panel - Selected vehicle itinerary */}
         <div style={{
-          flex: 1,
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          padding: '12px',
-        }}>
-          <MapCanvas
-            problem={problem}
-            solution={solution}
-            simulationResult={simulationResult}
-            currentTime={playbackState.currentTime}
-            pathCache={pathCache}
-            riderNumbers={riderNumbers}
-            selectedRiderId={selectedRiderId}
-            hoveredRiderId={hoveredRiderId}
-            onRiderClick={handleSelectRider}
-            onRiderHover={setHoveredRiderId}
-            onVehicleClick={setSelectedVehicleId}
-            width={500}
-            height={500}
-          />
-        </div>
-
-        {/* Right panel - Selected vehicle itinerary */}
-        <div style={{
-          width: '260px',
+          width: '240px',
           display: 'flex',
           flexDirection: 'column',
           backgroundColor: '#ffffff',
-          borderLeft: '1px solid #e2e8f0',
+          borderRight: '1px solid #e2e8f0',
           flexShrink: 0,
         }}>
           {selectedVehicle ? (
@@ -541,7 +592,7 @@ function App() {
                     fontSize: '13px',
                   }}>
                     No stops assigned.<br />
-                    Select a rider to assign.
+                    Use + button on riders.
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -554,6 +605,7 @@ function App() {
                         riderName={riderMap.get(stop.riderId)?.name || stop.riderId}
                         riderNum={riderNumbers.get(stop.riderId) ?? 0}
                         isHighlighted={stop.riderId === hoveredRiderId || stop.riderId === selectedRiderId}
+                        currentTime={playbackState.currentTime}
                         onMoveUp={() => handleMoveStop(selectedVehicleId!, idx, 'up')}
                         onMoveDown={() => handleMoveStop(selectedVehicleId!, idx, 'down')}
                         onRemove={() => handleRemoveRider(stop.riderId)}
@@ -564,32 +616,6 @@ function App() {
                   </div>
                 )}
               </div>
-
-              {/* Add rider button - show when rider selected and not already on this vehicle */}
-              {selectedRiderId && riderAssignments.get(selectedRiderId) !== selectedVehicleId && (
-                <div style={{
-                  padding: '10px',
-                  borderTop: '1px solid #e2e8f0',
-                  backgroundColor: '#f0fdf4',
-                }}>
-                  <button
-                    onClick={() => handleAssignToVehicle(selectedVehicleId!)}
-                    style={{
-                      width: '100%',
-                      padding: '10px',
-                      fontSize: '14px',
-                      fontWeight: 600,
-                      color: '#fff',
-                      backgroundColor: '#22c55e',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    + Add Rider #{riderNumbers.get(selectedRiderId)} ({riderMap.get(selectedRiderId)?.name})
-                  </button>
-                </div>
-              )}
             </>
           ) : (
             <div style={{
@@ -602,10 +628,26 @@ function App() {
               padding: '20px',
               textAlign: 'center',
             }}>
-              Select a vehicle to view and edit its itinerary
+              Select a vehicle to view itinerary
             </div>
           )}
         </div>
+
+        {/* Right - Map */}
+        <MapContainer
+          problem={problem}
+          solution={solution}
+          simulationResult={simulationResult}
+          currentTime={playbackState.currentTime}
+          pathCache={pathCache}
+          riderNumbers={riderNumbers}
+          selectedRiderId={selectedRiderId}
+          selectedVehicleId={selectedVehicleId}
+          hoveredRiderId={hoveredRiderId}
+          onRiderClick={handleSelectRider}
+          onRiderHover={setHoveredRiderId}
+          onVehicleClick={handleSelectVehicle}
+        />
       </div>
 
       {/* Bottom bar - Playback controls */}
@@ -654,22 +696,57 @@ function App() {
           ))}
         </div>
 
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '12px', color: '#64748b', width: '45px' }}>
-            {formatTime(problem.serviceWindow.earliest)}
-          </span>
-          <input
-            type="range"
-            min={problem.serviceWindow.earliest}
-            max={problem.serviceWindow.latest}
-            step={1}
-            value={playbackState.currentTime}
-            onChange={(e) => playbackControls.setTime(parseFloat(e.target.value))}
-            style={{ flex: 1, cursor: 'pointer' }}
-          />
-          <span style={{ fontSize: '12px', color: '#64748b', width: '45px' }}>
-            {formatTime(problem.serviceWindow.latest)}
-          </span>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
+          {/* Scrubber indicators overlay */}
+          <div style={{ position: 'relative', height: '16px' }}>
+            {scrubberIndicators.map((ind, i) => {
+              const percent = (ind.time - problem.serviceWindow.earliest) /
+                (problem.serviceWindow.latest - problem.serviceWindow.earliest) * 100;
+              return (
+                <div
+                  key={i}
+                  style={{
+                    position: 'absolute',
+                    left: `calc(45px + ${percent}% * (100% - 90px) / 100)`,
+                    top: ind.type === 'pickup' || ind.type === 'start' ? '0' : '8px',
+                    transform: 'translateX(-50%)',
+                    fontSize: '10px',
+                    color: ind.color || '#64748b',
+                    fontWeight: 600,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    lineHeight: 1,
+                  }}
+                >
+                  {(ind.type === 'pickup' || ind.type === 'start') && (
+                    <span>{ind.type === 'start' ? '▶' : '▲'}{ind.riderNum ?? ''}</span>
+                  )}
+                  {(ind.type === 'dropoff' || ind.type === 'end') && (
+                    <span>{ind.type === 'end' ? '■' : '▼'}{ind.riderNum ?? ''}</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '12px', color: '#64748b', width: '45px' }}>
+              {formatTime(problem.serviceWindow.earliest)}
+            </span>
+            <input
+              type="range"
+              min={problem.serviceWindow.earliest}
+              max={problem.serviceWindow.latest}
+              step={1}
+              value={playbackState.currentTime}
+              onChange={(e) => playbackControls.setTime(parseFloat(e.target.value))}
+              style={{ flex: 1, cursor: 'pointer' }}
+            />
+            <span style={{ fontSize: '12px', color: '#64748b', width: '45px' }}>
+              {formatTime(problem.serviceWindow.latest)}
+            </span>
+          </div>
         </div>
 
         <div style={{
@@ -688,6 +765,71 @@ function App() {
   );
 }
 
+// Map container that handles dynamic sizing
+function MapContainer(props: {
+  problem: Parameters<typeof MapCanvas>[0]['problem'];
+  solution: Parameters<typeof MapCanvas>[0]['solution'];
+  simulationResult: Parameters<typeof MapCanvas>[0]['simulationResult'];
+  currentTime: number;
+  pathCache: Parameters<typeof MapCanvas>[0]['pathCache'];
+  riderNumbers: Parameters<typeof MapCanvas>[0]['riderNumbers'];
+  selectedRiderId: RiderId | null;
+  selectedVehicleId: VehicleId | null;
+  hoveredRiderId: RiderId | null;
+  onRiderClick: (riderId: RiderId) => void;
+  onRiderHover: (riderId: RiderId | null) => void;
+  onVehicleClick: (vehicleId: VehicleId) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 500, height: 500 });
+
+  useEffect(() => {
+    const updateDimensions = () => {
+      if (containerRef.current) {
+        const { width, height } = containerRef.current.getBoundingClientRect();
+        // Use the smaller dimension to maintain aspect ratio
+        const size = Math.min(width - 24, height - 24);
+        setDimensions({ width: Math.max(200, size), height: Math.max(200, size) });
+      }
+    };
+
+    updateDimensions();
+    window.addEventListener('resize', updateDimensions);
+    return () => window.removeEventListener('resize', updateDimensions);
+  }, []);
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        flex: 1,
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: '12px',
+        overflow: 'hidden',
+      }}
+    >
+      <MapCanvas
+        problem={props.problem}
+        solution={props.solution}
+        simulationResult={props.simulationResult}
+        currentTime={props.currentTime}
+        pathCache={props.pathCache}
+        riderNumbers={props.riderNumbers}
+        selectedRiderId={props.selectedRiderId}
+        selectedVehicleId={props.selectedVehicleId}
+        hoveredRiderId={props.hoveredRiderId}
+        onRiderClick={props.onRiderClick}
+        onRiderHover={props.onRiderHover}
+        onVehicleClick={props.onVehicleClick}
+        width={dimensions.width}
+        height={dimensions.height}
+      />
+    </div>
+  );
+}
+
 const btnStyle: React.CSSProperties = {
   padding: '4px 10px',
   fontSize: '13px',
@@ -699,13 +841,30 @@ const btnStyle: React.CSSProperties = {
   cursor: 'pointer',
 };
 
+const riderActionBtnStyle: React.CSSProperties = {
+  width: '18px',
+  height: '18px',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontSize: '14px',
+  fontWeight: 700,
+  backgroundColor: '#fff',
+  border: '1px solid #d1d5db',
+  borderRadius: '3px',
+  cursor: 'pointer',
+  padding: 0,
+  marginLeft: 'auto',
+};
+
 interface StopRowProps {
   stop: ItineraryStop;
   index: number;
-  simStop?: { arrivalTime: number; minutesEarly?: number; minutesLate?: number; minutesOverMaxTime?: number };
+  simStop?: { arrivalTime: number; departureTime: number; minutesEarly?: number; minutesLate?: number; minutesOverMaxTime?: number };
   riderName: string;
   riderNum: number;
   isHighlighted?: boolean;
+  currentTime: number;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onRemove: () => void;
@@ -713,9 +872,10 @@ interface StopRowProps {
   canMoveDown: boolean;
 }
 
-function StopRow({ stop, simStop, riderName, riderNum, isHighlighted, onMoveUp, onMoveDown, onRemove, canMoveUp, canMoveDown }: StopRowProps) {
+function StopRow({ stop, simStop, riderName, riderNum, isHighlighted, currentTime, onMoveUp, onMoveDown, onRemove, canMoveUp, canMoveDown }: StopRowProps) {
   const isPickup = stop.type === 'pickup';
   const hasIssue = simStop?.minutesLate || simStop?.minutesOverMaxTime;
+  const isCompleted = simStop && currentTime >= simStop.departureTime;
 
   let bgColor = '#f9fafb';
   if (isHighlighted) {
@@ -734,6 +894,7 @@ function StopRow({ stop, simStop, riderName, riderNum, isHighlighted, onMoveUp, 
       borderRadius: '4px',
       fontSize: '12px',
       border: isHighlighted ? '1px solid #3b82f6' : '1px solid transparent',
+      opacity: isCompleted ? 0.4 : 1,
     }}>
       <span style={{
         width: '20px',

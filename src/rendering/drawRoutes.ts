@@ -12,7 +12,9 @@ export interface DrawRoutesOptions {
   vehicleResults: Map<VehicleId, VehicleSimResult>;
   hoveredRiderId: RiderId | null;
   selectedRiderId: RiderId | null;
+  selectedVehicleId: VehicleId | null;
   mapWidth: number; // for opacity fade calculation
+  scale: number;
 }
 
 export function drawRoutes(
@@ -24,19 +26,24 @@ export function drawRoutes(
   vehicleIndex: Map<VehicleId, number>,
   options: DrawRoutesOptions
 ): void {
-  const { pathCache, riderNumbers, currentTime, vehicleResults, hoveredRiderId, selectedRiderId, mapWidth } = options;
+  const { pathCache, riderNumbers, currentTime, vehicleResults, hoveredRiderId, selectedRiderId, selectedVehicleId, mapWidth, scale } = options;
 
   for (const vehicle of vehicles) {
+    // If a vehicle is selected, only draw routes for that vehicle
+    if (selectedVehicleId && vehicle.id !== selectedVehicleId) {
+      continue;
+    }
+
     const itinerary = itineraries.get(vehicle.id) || [];
     const index = vehicleIndex.get(vehicle.id) ?? 0;
     const color = VEHICLE_COLORS[index % VEHICLE_COLORS.length];
     const simResult = vehicleResults.get(vehicle.id);
 
     // Build segments with timing info
-    const segments = buildRouteSegments(vehicle, itinerary, riders, city, pathCache, simResult);
+    const segments = buildRouteSegments(vehicle, itinerary, riders, pathCache, simResult);
 
     // Draw route lines with time-based visibility and distance-based opacity
-    drawRouteLines(ctx, segments, city, currentTime, color, mapWidth);
+    drawRouteLines(ctx, segments, city, currentTime, color, mapWidth, scale);
 
     // Draw stop markers with rider numbers
     for (const stop of itinerary) {
@@ -50,7 +57,7 @@ export function drawRoutes(
       const riderNum = riderNumbers.get(stop.riderId) ?? 0;
       const isHovered = stop.riderId === hoveredRiderId;
       const isSelected = stop.riderId === selectedRiderId;
-      drawRiderMarker(ctx, node.x, node.y, riderNum, stop.type === 'pickup', color, isHovered || isSelected);
+      drawRiderMarker(ctx, node.x, node.y, riderNum, stop.type === 'pickup', color, isHovered || isSelected, scale);
     }
   }
 }
@@ -65,7 +72,6 @@ function buildRouteSegments(
   vehicle: Vehicle,
   itinerary: Itinerary,
   riders: Map<RiderId, Rider>,
-  _city: City,
   pathCache: PathCache,
   simResult: VehicleSimResult | undefined
 ): RouteSegment[] {
@@ -130,14 +136,17 @@ function drawRouteLines(
   city: City,
   currentTime: number,
   color: string,
-  mapWidth: number
+  mapWidth: number,
+  scale: number
 ): void {
-  ctx.lineWidth = 2;
-  ctx.setLineDash([4, 4]);
+  const lineWidth = 2 / scale;
+  const dashSize = 4 / scale;
+
+  ctx.lineWidth = lineWidth;
+  ctx.setLineDash([dashSize, dashSize]);
 
   // Calculate cumulative distance from current position
   let cumulativeDistanceAhead = 0;
-  let foundCurrentPosition = false;
 
   for (const segment of segments) {
     // Skip segments entirely in the past
@@ -171,7 +180,6 @@ function drawRouteLines(
 
     if (segment.departureTime < currentTime && currentTime < segment.arrivalTime) {
       // Currently traveling this segment - interpolate start position
-      foundCurrentPosition = true;
       const timeProgress = (currentTime - segment.departureTime) / (segment.arrivalTime - segment.departureTime);
       const targetDist = timeProgress * totalSegmentLength;
 
@@ -184,9 +192,6 @@ function drawRouteLines(
         }
         accumulated += segmentDistances[i];
       }
-    } else if (!foundCurrentPosition) {
-      // This segment is in the future, add its distance
-      cumulativeDistanceAhead += totalSegmentLength;
     }
 
     // Draw each edge of this segment with appropriate opacity
@@ -219,10 +224,12 @@ function drawRouteLines(
         opacity = 1.0 - (distanceFromCurrent - mapWidth) / (mapWidth * 2);
       }
 
+      // Fix dash pattern: draw from endpoint to startpoint, so dash pattern stays fixed
+      // This makes the dashes appear stable regardless of where the interpolated start is
       ctx.beginPath();
       ctx.strokeStyle = hexToRgba(color, opacity);
-      ctx.moveTo(fromX, fromY);
-      ctx.lineTo(toX, toY);
+      ctx.moveTo(toX, toY);
+      ctx.lineTo(fromX, fromY);
       ctx.stroke();
     }
   }
@@ -244,9 +251,11 @@ function drawRiderMarker(
   riderNum: number,
   isPickup: boolean,
   color: string,
-  isHighlighted: boolean
+  isHighlighted: boolean,
+  scale: number
 ): void {
-  const size = isHighlighted ? 10 : 8;
+  const size = (isHighlighted ? 10 : 8) / scale;
+  const fontSize = (isHighlighted ? 9 : 8) / scale;
 
   ctx.beginPath();
   if (isPickup) {
@@ -264,12 +273,12 @@ function drawRiderMarker(
   ctx.fillStyle = color;
   ctx.fill();
   ctx.strokeStyle = isHighlighted ? '#1e3a8a' : '#1f2937';
-  ctx.lineWidth = isHighlighted ? 2 : 1;
+  ctx.lineWidth = (isHighlighted ? 2 : 1) / scale;
   ctx.stroke();
 
   // Draw rider number - centered properly
   ctx.fillStyle = '#ffffff';
-  ctx.font = `bold ${isHighlighted ? 9 : 8}px sans-serif`;
+  ctx.font = `bold ${fontSize}px sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   // Offset to center in the wider part of triangle
@@ -285,7 +294,8 @@ export function drawAllRiders(
   city: City,
   assignedRiders: Set<RiderId>,
   hoveredRiderId: RiderId | null,
-  selectedRiderId: RiderId | null
+  selectedRiderId: RiderId | null,
+  scale: number
 ): void {
   // Group markers by position to handle overlaps
   const positionGroups = new Map<string, { x: number; y: number; markers: { riderId: RiderId; type: 'pickup' | 'dropoff' }[] }>();
@@ -328,7 +338,7 @@ export function drawAllRiders(
       let offsetY = 0;
       if (count > 1) {
         const angle = (i / count) * Math.PI * 2 - Math.PI / 2;
-        const radius = 12;
+        const radius = 12 / scale;
         offsetX = Math.cos(angle) * radius;
         offsetY = Math.sin(angle) * radius;
       }
@@ -337,7 +347,7 @@ export function drawAllRiders(
       const y = group.y + offsetY;
 
       const color = isHovered || isSelected ? '#3b82f6' : '#6b7280';
-      drawUnassignedMarker(ctx, x, y, riderNum, marker.type === 'pickup', color, isHovered || isSelected);
+      drawUnassignedMarker(ctx, x, y, riderNum, marker.type === 'pickup', color, isHovered || isSelected, scale);
     }
   }
 }
@@ -349,9 +359,11 @@ function drawUnassignedMarker(
   riderNum: number,
   isPickup: boolean,
   color: string,
-  isHighlighted: boolean
+  isHighlighted: boolean,
+  scale: number
 ): void {
-  const size = isHighlighted ? 10 : 8;
+  const size = (isHighlighted ? 10 : 8) / scale;
+  const fontSize = (isHighlighted ? 9 : 8) / scale;
 
   ctx.beginPath();
   if (isPickup) {
@@ -367,12 +379,12 @@ function drawUnassignedMarker(
   ctx.fillStyle = color;
   ctx.fill();
   ctx.strokeStyle = isHighlighted ? '#1e3a8a' : '#374151';
-  ctx.lineWidth = isHighlighted ? 2 : 1;
+  ctx.lineWidth = (isHighlighted ? 2 : 1) / scale;
   ctx.stroke();
 
   // Draw rider number - centered properly
   ctx.fillStyle = '#ffffff';
-  ctx.font = `bold ${isHighlighted ? 9 : 8}px sans-serif`;
+  ctx.font = `bold ${fontSize}px sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   const textY = isPickup ? y + size * 0.1 : y - size * 0.1;

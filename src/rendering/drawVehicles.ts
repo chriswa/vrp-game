@@ -246,24 +246,28 @@ export const VEHICLE_COLORS = [
 export function drawVehicles(
   ctx: CanvasRenderingContext2D,
   positions: VehiclePosition[],
-  vehicleIndex: Map<VehicleId, number>
+  vehicleIndex: Map<VehicleId, number>,
+  scale: number = 1
 ): void {
+  const radius = 10 / scale;
+  const fontSize = 9 / scale;
+
   for (const pos of positions) {
     const index = vehicleIndex.get(pos.vehicleId) ?? 0;
     const color = VEHICLE_COLORS[index % VEHICLE_COLORS.length];
 
     // Draw vehicle as a circle with border
     ctx.beginPath();
-    ctx.arc(pos.x, pos.y, 10, 0, Math.PI * 2);
+    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
     ctx.fillStyle = color;
     ctx.fill();
     ctx.strokeStyle = '#1f2937';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 2 / scale;
     ctx.stroke();
 
     // Draw passenger count
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 9px sans-serif';
+    ctx.font = `bold ${fontSize}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(String(pos.passengers), pos.x, pos.y);

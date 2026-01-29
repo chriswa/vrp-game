@@ -4,6 +4,7 @@ export interface DrawCityOptions {
   highlightedPath?: NodeId[];
   selectedNode?: NodeId;
   hoverNode?: NodeId;
+  scale?: number;
 }
 
 export function drawCity(
@@ -11,7 +12,7 @@ export function drawCity(
   city: City,
   options: DrawCityOptions = {}
 ): void {
-  const { highlightedPath, selectedNode, hoverNode } = options;
+  const { highlightedPath, selectedNode, hoverNode, scale = 1 } = options;
   const pathSet = new Set(highlightedPath || []);
 
   // Draw edges
@@ -33,40 +34,45 @@ export function drawCity(
 
     if (isHighlighted) {
       ctx.strokeStyle = '#3b82f6';
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 4 / scale;
     } else {
       ctx.strokeStyle = '#d1d5db';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 2 / scale;
     }
 
     ctx.stroke();
   }
 
-  // Draw nodes
+  // Draw nodes (very subtle, 2px)
   for (const node of city.nodes.values()) {
     const isSelected = node.id === selectedNode;
     const isHover = node.id === hoverNode;
     const isPath = pathSet.has(node.id);
 
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, isSelected || isHover ? 8 : 6, 0, Math.PI * 2);
+    // Only draw larger nodes if they're selected/hovered/in path
+    if (isSelected || isHover || isPath) {
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, (isSelected || isHover ? 6 : 4) / scale, 0, Math.PI * 2);
 
-    if (isSelected) {
-      ctx.fillStyle = '#ef4444';
-    } else if (isHover) {
-      ctx.fillStyle = '#f97316';
-    } else if (isPath) {
-      ctx.fillStyle = '#3b82f6';
+      if (isSelected) {
+        ctx.fillStyle = '#ef4444';
+      } else if (isHover) {
+        ctx.fillStyle = '#f97316';
+      } else {
+        ctx.fillStyle = '#3b82f6';
+      }
+
+      ctx.fill();
+      ctx.strokeStyle = '#374151';
+      ctx.lineWidth = 1 / scale;
+      ctx.stroke();
     } else {
-      ctx.fillStyle = '#6b7280';
+      // Subtle small dot for regular nodes
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, 2 / scale, 0, Math.PI * 2);
+      ctx.fillStyle = '#94a3b8';
+      ctx.fill();
     }
-
-    ctx.fill();
-
-    // Draw node border
-    ctx.strokeStyle = '#374151';
-    ctx.lineWidth = 1;
-    ctx.stroke();
   }
 }
 
