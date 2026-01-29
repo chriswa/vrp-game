@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
-import type { Problem, RiderId, VehicleId } from '../types/problem';
+import type { Problem, Rider, RiderId, VehicleId } from '../types/problem';
 import type { Solution } from '../types/solution';
 import type { SimulationResult } from '../types/simulation';
 import { drawCity } from './drawCity';
@@ -55,7 +55,7 @@ export function MapCanvas({
   }, [problem.vehicles]);
 
   const riderMap = useMemo(() => {
-    const map = new Map<RiderId, typeof problem.riders[0]>();
+    const map = new Map<RiderId, Rider>();
     problem.riders.forEach((r) => map.set(r.id, r));
     return map;
   }, [problem.riders]);

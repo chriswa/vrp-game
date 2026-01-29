@@ -55,10 +55,10 @@ export class SimulationCache {
     }
 
     // All cached - reconstruct result from cache
-    return this.reconstructFromCache(solution);
+    return this.reconstructFromCache();
   }
 
-  private reconstructFromCache(_solution: Solution): SimulationResult {
+  private reconstructFromCache(): SimulationResult {
     const vehicleResults = new Map<VehicleId, VehicleSimResult>();
     const assignedRiders = new Set<string>();
     let totalLateness = 0;

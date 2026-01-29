@@ -699,12 +699,12 @@ function App() {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
           {/* Scrubber indicators overlay */}
           <div style={{ position: 'relative', height: '16px' }}>
-            {scrubberIndicators.map((ind, i) => {
+            {scrubberIndicators.map((ind) => {
               const percent = (ind.time - problem.serviceWindow.earliest) /
                 (problem.serviceWindow.latest - problem.serviceWindow.earliest) * 100;
               return (
                 <div
-                  key={i}
+                  key={`${ind.type}-${ind.time}-${ind.riderNum ?? 'none'}`}
                   style={{
                     position: 'absolute',
                     left: `calc(45px + ${percent}% * (100% - 90px) / 100)`,
